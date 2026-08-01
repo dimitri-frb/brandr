@@ -86,7 +86,7 @@ export function EpsilonFlow({ test, onExit }: { test?: boolean; onExit: () => vo
   const emailRef = useRef<HTMLInputElement>(null);
 
   const set = (p: Partial<Brief>) => setBrief((b) => ({ ...b, ...p }));
-  const goto = useCallback((n: number) => { setStep(n); setErr(""); }, []);
+  const goto = useCallback((n: number) => { setStep(n); setErr(""); setOverlay(null); }, []);
 
   // ── multi-select: several spaces / kinds can be picked; one recommended
   // option is always pre-selected so ⏎ can simply advance. ──────────────────
@@ -119,32 +119,64 @@ export function EpsilonFlow({ test, onExit }: { test?: boolean; onExit: () => vo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, brief.does]);
 
+  // The concept is prefetched SEVERAL steps ahead (from the space screen, once
+  // the written brief is complete) so the words screen never waits for it.
   const conceptBusy = useRef(false);
   useEffect(() => {
-    if (test || concept || conceptBusy.current || !brief.signal.length || step < 7) return;
+    if (test || concept || conceptBusy.current || !brief.does.trim() || step < 5) return;
     conceptBusy.current = true;
     naming.concepts(brief).then((cs) => setConcept(cs[0] || { title: "your idea", blurb: "", lane: "" }))
       .catch(() => setConcept({ title: "your idea", blurb: "", lane: "" }))
       .finally(() => { conceptBusy.current = false; });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, brief.signal.length]);
+  }, [step]);
 
   // The word field: one relate() on the concept, flattened across its groups.
+  // Prefetched from the kind-of-name screen (the north star is set by then), a
+  // full step before the founder arrives.
   const fieldBusy = useRef(false);
   useEffect(() => {
-    if (test || field.length || fieldBusy.current || !concept || step !== 9) return;
+    if (test || field.length || fieldBusy.current || !concept || step < 8 || step > 9) return;
     fieldBusy.current = true;
     naming.relate(brief, "", concept.title, []).then((r) => {
       const flat: FieldWord[] = [];
       const groups = r.groups || [];
       for (let i = 0; i < 5; i++) groups.forEach((g) => { const w = g.words[i]; if (w && flat.length < 18 && !flat.some((f) => f.w === w.w)) flat.push({ w: w.w, note: w.note, lang: w.lang }); });
       setField(flat);
-    }).catch(() => setErr("The words didn't come. Go back and try again."))
+    }).catch(() => { if (step === 9) setErr("The words didn't come. Go back and try again."); })
       .finally(() => { fieldBusy.current = false; });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, concept]);
 
-  // ── word overlay (long-press / hover / tap-again) ─────────────────────────
+  // Once the field lands, quietly warm each word's meaning + world (staggered,
+  // deduped) so long-press / hover opens instantly instead of fetching then.
+  useEffect(() => {
+    if (test || step < 8 || step > 9 || !field.length || !concept) return;
+    const timers = field.slice(0, 12).map((f, i) =>
+      window.setTimeout(() => { fetchWordWorld(f.w); }, i * 350));
+    return () => timers.forEach(clearTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, field, concept]);
+
+  // ── word meaning + world: single-flight fetch shared by the prefetcher and
+  // the overlay, so a word is never requested twice. ────────────────────────
+  const relPromises = useRef<Map<string, Promise<{ def: string; world: FieldWord[] }>>>(new Map());
+  const fetchWordWorld = (w: string): Promise<{ def: string; world: FieldWord[] }> => {
+    const inFlight = relPromises.current.get(w);
+    if (inFlight) return inFlight;
+    const p = naming.relate(brief, w, concept?.title || "", []).then((r) => {
+      const world: FieldWord[] = [];
+      (r.groups || []).forEach((g) => g.words.forEach((x) => { if (world.length < 6 && x.w.toLowerCase() !== w.toLowerCase()) world.push({ w: x.w, note: x.note, lang: x.lang }); }));
+      const data = { def: r.def || "", world };
+      relCache.current.set(w, data);
+      return data;
+    });
+    p.catch(() => relPromises.current.delete(w)); // failed fetches retry on demand
+    relPromises.current.set(w, p);
+    return p;
+  };
+
+  // ── word overlay (click-again / long-press) ───────────────────────────────
   const openWord = (w: string) => {
     const hit = relCache.current.get(w);
     if (hit) { setOverlay({ w, ...hit }); return; }
@@ -155,13 +187,9 @@ export function EpsilonFlow({ test, onExit }: { test?: boolean; onExit: () => vo
       return;
     }
     setOverlay({ w, def: "", world: [] });
-    naming.relate(brief, w, concept?.title || "", []).then((r) => {
-      const world: FieldWord[] = [];
-      (r.groups || []).forEach((g) => g.words.forEach((x) => { if (world.length < 6 && x.w.toLowerCase() !== w.toLowerCase()) world.push({ w: x.w, note: x.note, lang: x.lang }); }));
-      const data = { def: r.def || "", world };
-      relCache.current.set(w, data);
-      setOverlay((o) => (o && o.w === w ? { w, ...data } : o));
-    }).catch(() => { /* leave the sparse overlay */ });
+    fetchWordWorld(w)
+      .then((data) => setOverlay((o) => (o && o.w === w ? { w, ...data } : o)))
+      .catch(() => { /* leave the sparse overlay */ });
   };
 
   const isKept = (w: string) => kept.some((k) => k.toLowerCase() === w.toLowerCase());
@@ -605,17 +633,15 @@ export function EpsilonFlow({ test, onExit }: { test?: boolean; onExit: () => vo
                   </>
                 ) : (
                   <>
-                    <p className="eps-kicker" style={{ marginBottom: 10 }}>Tap what resonates</p>
+                    <p className="eps-kicker" style={{ marginBottom: 10 }}>{isTouch() ? "Tap" : "Click"} what resonates</p>
                     <p className="eps-hint" style={{ margin: "0 0 24px" }}>
-                      Tap to keep a word · {isTouch() ? "hold" : "hover"} it to open its meaning and the words around it.
+                      {isTouch() ? "Tap" : "Click"} to keep a word · {isTouch() ? "tap" : "click"} it again to open its meaning and the words around it.
                     </p>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: "12px 18px", alignItems: "baseline", maxWidth: 680 }}>
                       {field.map((f, i) => (
                         <button key={f.w} className={"eps-word" + (isKept(f.w) ? " on" : "")}
                           style={{ fontSize: SIZES[i % SIZES.length], animation: `eps-floaty ${FLOATS[i % FLOATS.length]}s ease-in-out infinite ${(i * 0.13).toFixed(2)}s` }}
                           onClick={() => { if (pressFired.current) { pressFired.current = false; return; } isKept(f.w) ? openWord(f.w) : toggleKeep(f.w); }}
-                          onMouseEnter={() => { if (!isTouch()) pressStart(f.w); }}
-                          onMouseLeave={pressEnd}
                           onTouchStart={() => pressStart(f.w)}
                           onTouchEnd={pressEnd}
                           onContextMenu={(e) => e.preventDefault()}>
