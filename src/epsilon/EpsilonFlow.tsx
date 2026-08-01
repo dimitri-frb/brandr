@@ -5,7 +5,7 @@
 // Reuses the live data layer (naming.*, fetchDomainBoard, captureLead).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  naming, fetchDomainBoard, captureLead, logDecision,
+  naming, fetchDomainBoard, captureSignup, logDecision,
   type Brief, type Comparison, type Concept, type NameIdea, type DomainCard,
 } from "../lib/namingApi";
 import { setTestMode } from "../lib/requestLog";
@@ -311,7 +311,9 @@ export function EpsilonFlow({ test, onExit }: { test?: boolean; onExit: () => vo
     switch (step) {
       case 0: goto(1); break;
       case 1:
-        if (!test) { captureLead(brief, who.email.trim(), who.name.trim()).catch(() => { /* soft */ }); }
+        // Sign-up: the founder's name goes in as fromName — captureLead's `name`
+        // is the CHOSEN BRAND name and /admin reads it as the final selection.
+        if (!test) { captureSignup(brief, who.name.trim(), who.email.trim()).catch(() => { /* soft */ }); }
         try { localStorage.setItem("ns.fromName", who.name.trim()); } catch { /* noop */ }
         goto(2); break;
       case 7: set({ signal: [feelings[feelIdx] || FEELING_FALLBACK[0]] }); goto(8); break;
